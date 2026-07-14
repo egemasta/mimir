@@ -76,7 +76,6 @@ WorkingDirectory=/path/to/mimir
 ExecStart=/usr/bin/uvicorn app.main:app --port 8181 --host 127.0.0.1
 Restart=on-failure
 RestartSec=3
-Environment=MIMIR_USER_ID=you
 
 [Install]
 WantedBy=default.target
@@ -87,6 +86,8 @@ systemctl --user enable --now mimir.service
 
 Verify with `curl http://127.0.0.1:8181/health` → `{"status":"ok"}`.
 
+> **`MIMIR_USER_ID` belongs to the adapter, not the gateway.** The gateway serves many users; identity is set per-agent in the MCP client config (next section). Setting it on this service has no effect — the engine doesn't read it here.
+
 Use the gateway mode whenever multiple agents (e.g. Claude Code and OpenCode) hit the same `~/.mimir` at the same time — DuckDB is single-writer, so two embedded sessions would file-lock each other. The gateway serializes access.
 
 ## Use it from Claude Code (or any MCP client) right now
@@ -96,6 +97,8 @@ claude mcp add mimir --scope user -e MIMIR_USER_ID=you -- python /path/to/mimir/
 ```
 
 No gateway to run — the embedded adapter imports the engine directly, so a process only exists while your agent session is open. Three tools show up: `mimir_recall`, `mimir_remember`, `mimir_flush`. Point your `CLAUDE.md` at them and your agent starts building a memory of you, one conversation at a time.
+
+> **Capture vs. flush — the one contract to know.** `mimir_remember` writes a raw turn to L0 (DuckDB). Recall reads L1 — extracted facts. Facts only materialize when `mimir_flush` runs the L0→L1 extraction pipeline at session end (or when an orphaned session is recovered by the next flush). So: a `mimir_remember` you just wrote will **not** appear in `mimir_recall` until the session is flushed. Call `mimir_flush` at natural conversation ends, or you'll think remember is broken.
 
 ## OpenCode
 
