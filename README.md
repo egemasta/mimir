@@ -51,22 +51,90 @@ Full diagrams and a module-by-module walkthrough: **[docs/ARCHITECTURE.md](docs/
 
 ```bash
 git clone https://github.com/hasil7677/mimir.git
-cd mimir/engine
+cd mimir
 pip install -e ".[dev]"
 uvicorn app.main:app --port 8080
 ```
 
 That's it — `GET /health` works with zero config. No `mimir.yaml`, no Redis, no API key required. Copy `mimir.yaml.example` to `mimir.yaml` when you want to point at a local Ollama model, a cloud LLM, or a Redis instance; every setting has a sane default until then.
 
+> **Note:** the repository root *is* the engine — `app/`, `adapters/`, and `pyproject.toml` all live at the top level. There is no `engine/` subdirectory.
+
+## Running as a background service
+
+For a permanent setup (auto-start on boot, restart on crash), run the gateway as a systemd user service. Adjust the port if 8080 is taken on your machine — here we use 8181:
+
+```bash
+mkdir -p ~/.config/systemd/user
+cat > ~/.config/systemd/user/mimir.service <<'EOF'
+[Unit]
+Description=Mimir memory engine
+After=network.target
+
+[Service]
+WorkingDirectory=/path/to/mimir
+ExecStart=/usr/bin/uvicorn app.main:app --port 8181 --host 127.0.0.1
+Restart=on-failure
+RestartSec=3
+Environment=MIMIR_USER_ID=you
+
+[Install]
+WantedBy=default.target
+EOF
+systemctl --user daemon-reload
+systemctl --user enable --now mimir.service
+```
+
+Verify with `curl http://127.0.0.1:8181/health` → `{"status":"ok"}`.
+
+Use the gateway mode whenever multiple agents (e.g. Claude Code and OpenCode) hit the same `~/.mimir` at the same time — DuckDB is single-writer, so two embedded sessions would file-lock each other. The gateway serializes access.
+
 ## Use it from Claude Code (or any MCP client) right now
 
 ```bash
-claude mcp add mimir --scope user -e MIMIR_USER_ID=you -- python /path/to/mimir/engine/adapters/mcp_embedded.py
+claude mcp add mimir --scope user -e MIMIR_USER_ID=you -- python /path/to/mimir/adapters/mcp_embedded.py
 ```
 
 No gateway to run — the embedded adapter imports the engine directly, so a process only exists while your agent session is open. Three tools show up: `mimir_recall`, `mimir_remember`, `mimir_flush`. Point your `CLAUDE.md` at them and your agent starts building a memory of you, one conversation at a time.
 
-Also documented: OpenCode (native MCP), Pi (via the community `pi-mcp-adapter`), and a plain HTTP contract for anything else — see **[docs/CLIENTS.md](docs/CLIENTS.md)**.
+## OpenCode
+
+Add to `opencode.json` (project) or `~/.config/opencode/opencode.json` (global). Two modes — pick one:
+
+**Embedded** (no server, one agent at a time):
+```json
+{
+  "mcp": {
+    "mimir": {
+      "type": "local",
+      "command": ["python", "/path/to/mimir/adapters/mcp_embedded.py"],
+      "enabled": true,
+      "environment": { "MIMIR_USER_ID": "you" }
+    }
+  }
+}
+```
+
+**Gateway** (connects to the systemd service from above, multi-agent safe):
+```json
+{
+  "mcp": {
+    "mimir": {
+      "type": "local",
+      "command": ["python", "/path/to/mimir/adapters/mcp_server.py"],
+      "enabled": true,
+      "environment": {
+        "MIMIR_URL": "http://127.0.0.1:8181",
+        "MIMIR_USER_ID": "you"
+      }
+    }
+  }
+}
+```
+
+Pair either mode with a memory-discipline section in your `INSTRUCTIONS.md` (or `CLAUDE.md`) so the agent actually calls the tools: `mimir_recall` at session start, `mimir_remember` when a preference or decision surfaces, `mimir_flush` at session end.
+
+Also documented: Pi (via the community `pi-mcp-adapter`), and a plain HTTP contract for anything else — see **[docs/CLIENTS.md](docs/CLIENTS.md)**.
 
 ## Status
 
